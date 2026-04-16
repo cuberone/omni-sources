@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Optional
+
 from asyncpg import Pool
 
 from .connection import get_db_pool
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class ConfigurationRepository:
-    def __init__(self, pool: Optional[Pool] = None):
+    def __init__(self, pool: Pool | None = None):
         self.pool = pool
 
     async def _get_pool(self) -> Pool:
@@ -19,7 +19,7 @@ class ConfigurationRepository:
             return self.pool
         return await get_db_pool()
 
-    async def get(self, key: str) -> Optional[dict]:
+    async def get(self, key: str) -> dict | None:
         """Return the JSONB value for the given key, or None if not found."""
         pool = await self._get_pool()
         async with pool.acquire() as conn:

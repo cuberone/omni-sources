@@ -1,6 +1,7 @@
 """Internal endpoints — for service-to-service calls only, not browser-exposed."""
 
 import logging
+
 from fastapi import APIRouter, HTTPException, Request
 
 logger = logging.getLogger(__name__)
