@@ -25,6 +25,7 @@ from routers import (
     agents_router,
     uploads_router,
     usage_router,
+    internal_router,
 )
 
 from config import PORT
@@ -47,6 +48,7 @@ app.include_router(model_providers_router)
 app.include_router(agents_router)
 app.include_router(uploads_router)
 app.include_router(usage_router)
+app.include_router(internal_router)
 
 
 @app.on_event("startup")
