@@ -190,6 +190,7 @@ def build_chat_system_prompt(
     connector_actions: list | None = None,
     user_name: str | None = None,
     user_email: str | None = None,
+    memories: list[str] | None = None,
 ) -> str:
     """Build system prompt from active sources and connector actions.
 
@@ -198,6 +199,7 @@ def build_chat_system_prompt(
         connector_actions: list of ConnectorAction dataclass instances (from tools.connector_handler)
         user_name: display name of the current user
         user_email: email of the current user
+        memories: list of memory strings to inject as remembered context
     """
     seen = set()
     display_names = []
@@ -234,12 +236,17 @@ def build_chat_system_prompt(
 
     user_line = _format_user_line(user_name, user_email)
 
-    return SYSTEM_PROMPT_TEMPLATE.format(
+    base_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         current_datetime=_format_datetime(),
         user_line=user_line,
         connected_apps=connected_apps,
         actions_section=actions_section,
     )
+
+    if memories:
+        bullet_list = "\n".join(f"- {m}" for m in memories)
+        return base_prompt + f"\n\n## Remembered context about this user\n{bullet_list}"
+    return base_prompt
 
 
 def _format_execution_log(execution_log: list[dict], max_chars: int = 5000) -> str:

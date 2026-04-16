@@ -44,6 +44,8 @@ from config import (
 from db.usage import UsageRepository
 from providers import LLMProvider
 from prompts import build_chat_system_prompt, build_agent_chat_system_prompt
+from memory.mode import resolve_memory_mode
+from db.configuration import ConfigurationRepository
 from services.compaction import ConversationCompactor
 from services.usage import UsageTracker, UsageContext, UsagePurpose, track_usage
 from state import AppState
@@ -416,6 +418,11 @@ async def stream_chat(
     messages_repo = MessagesRepository()
     chat_messages = await messages_repo.get_active_path(chat_id)
 
+    # Memory state — only populated in the regular chat branch
+    memory_client = None
+    effective_mode = "off"
+    memories: list[str] = []
+
     if chat.agent_id:
         # --- Agent chat setup ---
         agent_repo = AgentRepository()
@@ -509,11 +516,42 @@ async def stream_chat(
         active_sources = [
             s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
         ]
+
+        # Memory: resolve mode and fetch relevant memories
+        memory_client = getattr(request.app.state, "memory_client", None)
+        memories = []
+        effective_mode = "off"
+        if memory_client and chat.user_id:
+            user_memory_mode = user.memory_mode if user else None
+            config_repo = ConfigurationRepository()
+            org_config = await config_repo.get("memory_mode_default")
+            org_default = (org_config or {}).get("mode")
+            effective_mode = resolve_memory_mode(user_memory_mode, org_default)
+            if effective_mode in ("chat", "full"):
+                last_user_text = ""
+                for msg in reversed(chat_messages):
+                    m = msg.message
+                    if m.get("role") == "user":
+                        content = m.get("content", "")
+                        if isinstance(content, str):
+                            last_user_text = content
+                        elif isinstance(content, list):
+                            last_user_text = " ".join(
+                                b.get("text", "") for b in content
+                                if isinstance(b, dict) and b.get("type") == "text"
+                            )
+                        break
+                if last_user_text:
+                    memories = await memory_client.search(
+                        query=last_user_text, user_id=chat.user_id, limit=5
+                    )
+
         system_prompt = build_chat_system_prompt(
             active_sources,
             build_result.connector_actions,
             user_name=user_name,
             user_email=user_email,
+            memories=memories if memories else None,
         )
 
         messages: list[MessageParam] = [
@@ -890,6 +928,31 @@ async def stream_chat(
 
                 # Send complete tool result message to omni-web for database persistence
                 yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+
+            # Memory write (fire-and-forget)
+            if memory_client and chat.user_id and effective_mode in ("chat", "full"):
+                try:
+                    last_user_content = None
+                    for msg in reversed(conversation_messages):
+                        m = msg if isinstance(msg, dict) else dict(msg)
+                        if m.get("role") == "user":
+                            last_user_content = m.get("content", "")
+                            break
+                    if last_user_content and assistant_message:
+                        assistant_content = "".join(
+                            b.get("text", "") for b in assistant_message.get("content", [])
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                        if assistant_content:
+                            turn = [
+                                {"role": "user", "content": last_user_content},
+                                {"role": "assistant", "content": assistant_content},
+                            ]
+                            asyncio.create_task(
+                                memory_client.add(messages=turn, user_id=chat.user_id)
+                            )
+                except Exception as e:
+                    logger.warning(f"Memory write setup failed for chat {chat_id}: {e}")
 
             yield f"event: end_of_stream\ndata: Stream ended\n\n"
 
