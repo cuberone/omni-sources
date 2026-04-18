@@ -27,6 +27,37 @@ export async function requireAgentAccess(
     return agent
 }
 
+async function seedAgentMemory(agent: Agent) {
+    if (!agent.instructions) return
+    try {
+        const { getConfig } = await import('../config.js')
+        const { services } = getConfig()
+        const resp = await fetch(
+            `${services.aiServiceUrl}/memories/agent/${encodeURIComponent(agent.id)}/seed`,
+            {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'x-user-id': 'system',
+                    'x-user-role': 'admin',
+                },
+                body: JSON.stringify({
+                    owner_user_id: agent.agentType === 'org' ? null : agent.userId,
+                    name: agent.name,
+                    instructions: agent.instructions,
+                    schedule_type: agent.scheduleType,
+                    schedule_value: agent.scheduleValue,
+                }),
+            },
+        )
+        if (!resp.ok && resp.status !== 503) {
+            console.warn(`Agent memory seed returned ${resp.status} for ${agent.id}`)
+        }
+    } catch (err) {
+        console.warn(`Agent memory seed failed for ${agent.id}:`, err)
+    }
+}
+
 export async function createAgent(data: {
     userId: string
     name: string
@@ -54,6 +85,7 @@ export async function createAgent(data: {
             allowedActions: data.allowedActions || [],
         })
         .returning()
+    await seedAgentMemory(agent)
     return agent
 }
 
@@ -75,6 +107,9 @@ export async function updateAgent(
         .set({ ...data, updatedAt: new Date() })
         .where(and(eq(agents.id, agentId), eq(agents.isDeleted, false)))
         .returning()
+    if (agent && (data.name !== undefined || data.instructions !== undefined || data.scheduleType !== undefined || data.scheduleValue !== undefined)) {
+        await seedAgentMemory(agent)
+    }
     return agent
 }
 
@@ -86,25 +121,24 @@ export async function deleteAgent(agentId: string) {
         .where(eq(agents.id, agentId))
         .returning()
 
-    // For org agents, purge the mem0 namespace. Best-effort — never block delete.
-    if (existing?.agentType === 'org') {
+    // Purge the mem0 namespace. Best-effort — never block delete.
+    if (existing) {
         try {
             const { getConfig } = await import('../config.js')
             const { services } = getConfig()
-            const resp = await fetch(
-                `${services.aiServiceUrl}/memories/org-agent/${encodeURIComponent(agentId)}`,
-                {
-                    method: 'DELETE',
-                    headers: { 'x-user-id': 'system', 'x-user-role': 'admin' },
-                },
-            )
+            const url =
+                existing.agentType === 'org'
+                    ? `${services.aiServiceUrl}/memories/org-agent/${encodeURIComponent(agentId)}`
+                    : `${services.aiServiceUrl}/memories/user-agent/${encodeURIComponent(agentId)}?owner_user_id=${encodeURIComponent(existing.userId ?? '')}`
+            const resp = await fetch(url, {
+                method: 'DELETE',
+                headers: { 'x-user-id': 'system', 'x-user-role': 'admin' },
+            })
             if (!resp.ok && resp.status !== 503) {
-                console.warn(
-                    `Org-agent memory purge returned ${resp.status} for ${agentId}`,
-                )
+                console.warn(`Agent memory purge returned ${resp.status} for ${agentId}`)
             }
         } catch (err) {
-            console.warn(`Org-agent memory purge failed for ${agentId}:`, err)
+            console.warn(`Agent memory purge failed for ${agentId}:`, err)
         }
     }
 

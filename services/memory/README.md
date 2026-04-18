@@ -38,7 +38,7 @@ dispatched via `run_in_threadpool`):
 | GET    | `/memories?user_id=…` | List every memory stored for a `user_id`                                  |
 | POST   | `/search`              | Vector-search for memories matching a query                                 |
 | DELETE | `/memories/{id}`       | Delete a single memory by its mem0 id                                       |
-| DELETE | `/memories?user_id=…` | Delete every memory for a `user_id`                                       |
+| DELETE | `/memories?user_id=…` | Delete every memory for a `user_id` (GDPR-friendly)                       |
 
 `user_id` is an opaque scoping key chosen by the caller. The AI service
 uses different key shapes for different subjects:
@@ -51,6 +51,18 @@ uses different key shapes for different subjects:
 
 The service trusts this key as-is. Ownership/authorisation is enforced
 one layer up, in the AI service's `/memories` proxy router.
+
+### Memory trust levels
+
+How memories are rendered in system prompts differs by namespace:
+
+| Namespace | Rendered as | Why |
+| --------- | ----------- | --- |
+| `<user_id>` (chat) | `<untrusted-memory>` fence with safety contract | Content is extracted from connector data (Slack, Gmail, etc.) — treated as attacker-controlled |
+| `user:<uid>:agent:<id>` (personal agent) | Plain `## What I remember` bullet list | Derived from the agent's own instructions and run summaries — not user-controlled data |
+| `org_agent:<agent_id>` (org agent) | Plain `## Agent memory (from prior runs)` bullet list | Same rationale as personal agent |
+
+The fence in chat memory instructs the model to treat the content as observations only, not instructions. Agent memory has no fence because it originates from admin-controlled instructions and the agent's own prior run summaries.
 
 ### `entrypoint.sh`
 
@@ -108,6 +120,37 @@ thin and best-effort: `search`/`add` swallow errors and log warnings;
 success. This folder (the sidecar) implements the server side of that
 same surface.
 
+### AI service memory proxy (`routers/memory.py`)
+
+The AI service exposes its own `/memories` router that browsers and the
+web backend talk to. It enforces ownership and authorization before
+forwarding to `memory/client.py`:
+
+| Method | Path                                | Auth  | Purpose                                                                      |
+| ------ | ----------------------------------- | ----- | ---------------------------------------------------------------------------- |
+| GET    | `/memories`                       | user  | List caller's memories (scoped to `x-user-id`)                             |
+| DELETE | `/memories`                       | user  | Delete all of caller's memories                                              |
+| DELETE | `/memories/org-agent/{agent_id}`  | admin | Purge `org_agent:<id>` namespace — called on org agent delete             |
+| DELETE | `/memories/user-agent/{agent_id}` | admin | Purge `user:<uid>:agent:<id>` namespace — called on personal agent delete |
+| POST   | `/memories/agent/{agent_id}/seed` | admin | Seed agent memory from instructions — called on agent create/update         |
+| DELETE | `/memories/{memory_id}`           | user  | Delete a single memory (ownership verified first)                            |
+
+**Agent memory seeding** (`POST /memories/agent/{agent_id}/seed`):
+Called by the web layer whenever an agent is created or its name,
+instructions, or schedule changes. It:
+
+1. Deletes all existing memories in the agent's namespace (so stale facts
+   from a previous instructions version don't persist).
+2. Writes one seed turn:
+   ```
+   user:      "Agent task: {instructions}"
+   assistant: "I am the '{name}' agent. My task: {instructions}. Schedule: {schedule_type} {schedule_value}."
+   ```
+
+   mem0 extracts facts from this turn and stores them as the agent's
+   initial memory. Background runs then layer run-summary memories on top
+   using the same namespace and turn structure (see UC-A / UC-B below).
+
 ### Mode gate
 
 Before ever calling this service, the AI service evaluates
@@ -121,7 +164,7 @@ Before ever calling this service, the AI service evaluates
 
 If the effective mode is `off`, no request reaches this service.
 
-### Stored memories vs. all collections
+### Stored memories section
 
 `GET /memories?user_id=` lists memories from the **active** embedder's
 collection only. This is intentional — search and add also use the active

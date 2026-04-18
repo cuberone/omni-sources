@@ -8,7 +8,8 @@ delete their own memories. The user identity is taken from the
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Path, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
+from pydantic import BaseModel
 
 from state import AppState
 
@@ -76,6 +77,74 @@ async def delete_org_agent_memories(
         raise HTTPException(status_code=502, detail="Memory service delete failed")
     logger.info(f"Purged org-agent memory namespace: {namespace}")
     return {"status": "deleted", "namespace": namespace}
+
+
+@router.delete("/user-agent/{agent_id}")
+async def delete_user_agent_memories(
+    request: Request,
+    agent_id: str = Path(..., description="Agent id whose memory namespace to purge"),
+    owner_user_id: str = Query(..., description="User id of the agent owner"),
+):
+    """Purge every memory stored under `user:<owner_user_id>:agent:<agent_id>`.
+
+    Used by the web layer when a personal agent is deleted.
+    """
+    _require_admin(request)
+    client = _require_memory_client(request)
+    namespace = f"user:{owner_user_id}:agent:{agent_id}"
+    ok = await client.delete_all(user_id=namespace)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Memory service delete failed")
+    logger.info(f"Purged user-agent memory namespace: {namespace}")
+    return {"status": "deleted", "namespace": namespace}
+
+
+class SeedAgentMemoryRequest(BaseModel):
+    owner_user_id: str | None = None  # None for org agents
+    name: str
+    instructions: str
+    schedule_type: str
+    schedule_value: str
+
+
+@router.post("/agent/{agent_id}/seed")
+async def seed_agent_memory(
+    request: Request,
+    agent_id: str = Path(..., description="Agent id to seed memory for"),
+    body: SeedAgentMemoryRequest = ...,
+):
+    """Replace agent memory with a seed record derived from its instructions.
+
+    Called by the web layer on agent create/update. Deletes the existing
+    namespace first so stale memories from a previous instructions version
+    do not linger.
+    """
+    _require_admin(request)
+    client = _require_memory_client(request)
+
+    namespace = (
+        f"org_agent:{agent_id}"
+        if body.owner_user_id is None
+        else f"user:{body.owner_user_id}:agent:{agent_id}"
+    )
+
+    # Delete existing memories so stale facts don't persist after edits.
+    await client.delete_all(user_id=namespace)
+
+    messages = [
+        {"role": "user", "content": f"Agent task: {body.instructions}"},
+        {
+            "role": "assistant",
+            "content": (
+                f"I am the '{body.name}' agent. "
+                f"My task: {body.instructions}. "
+                f"Schedule: {body.schedule_type} {body.schedule_value}."
+            ),
+        },
+    ]
+    await client.add(messages=messages, user_id=namespace)
+    logger.info(f"Seeded agent memory namespace: {namespace}")
+    return {"status": "seeded", "namespace": namespace}
 
 
 @router.delete("/{memory_id}")

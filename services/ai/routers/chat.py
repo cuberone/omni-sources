@@ -418,10 +418,11 @@ async def stream_chat(
     messages_repo = MessagesRepository()
     chat_messages = await messages_repo.get_active_path(chat_id)
 
-    # Memory state — only populated in the regular chat branch
+    # Memory state — populated in both agent and regular chat branches
     memory_client = None
     effective_mode = "off"
     memories: list[str] = []
+    memory_write_key: str | None = None  # None = no write (e.g. agent chats are read-only)
 
     if chat.agent_id:
         # --- Agent chat setup ---
@@ -472,12 +473,48 @@ async def stream_chat(
         active_sources = [
             s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
         ]
+
+        # Memory: fetch agent-scoped memories (same scoping as background executor)
+        memory_client = getattr(request.app.state, "memory_client", None)
+        effective_mode = "off"
+        memories: list[str] = []
+        if memory_client:
+            config_repo = ConfigurationRepository()
+            org_config = await config_repo.get("memory_mode_default")
+            org_default = (org_config or {}).get("value")
+            if is_org_agent:
+                effective_mode = org_default if org_default in ("chat", "full") else "off"
+                memory_key = f"org_agent:{agent.id}"
+            else:
+                user_memory_mode = chat_user.memory_mode if chat_user else None
+                effective_mode = resolve_memory_mode(user_memory_mode, org_default)
+                memory_key = f"user:{agent.user_id}:agent:{agent.id}"
+            if effective_mode in ("chat", "full") and chat_messages:
+                last_user_text = ""
+                for msg in reversed(chat_messages):
+                    m = msg.message
+                    if m.get("role") == "user":
+                        content = m.get("content", "")
+                        if isinstance(content, str):
+                            last_user_text = content
+                        elif isinstance(content, list):
+                            last_user_text = " ".join(
+                                b.get("text", "") for b in content
+                                if isinstance(b, dict) and b.get("type") == "text"
+                            )
+                        break
+                if last_user_text:
+                    memories = await memory_client.search(
+                        query=last_user_text, user_id=memory_key, limit=5
+                    )
+
         system_prompt = build_agent_chat_system_prompt(
             agent,
             runs,
             active_sources,
             user_name=user_name,
             user_email=user_email,
+            memories=memories if memories else None,
         )
 
         # Build messages, injecting ephemeral start message if needed
@@ -522,6 +559,7 @@ async def stream_chat(
         memories = []
         effective_mode = "off"
         if memory_client and chat.user_id:
+            memory_write_key = chat.user_id
             user_memory_mode = user.memory_mode if user else None
             config_repo = ConfigurationRepository()
             org_config = await config_repo.get("memory_mode_default")
@@ -930,7 +968,7 @@ async def stream_chat(
                 yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
 
             # Memory write (fire-and-forget)
-            if memory_client and chat.user_id and effective_mode in ("chat", "full"):
+            if memory_client and memory_write_key and effective_mode in ("chat", "full"):
                 try:
                     last_user_content = None
                     for msg in reversed(conversation_messages):
@@ -960,7 +998,7 @@ async def stream_chat(
                                 {"role": "assistant", "content": assistant_content},
                             ]
                             asyncio.create_task(
-                                memory_client.add(messages=turn, user_id=chat.user_id)
+                                memory_client.add(messages=turn, user_id=memory_write_key)
                             )
                 except Exception as e:
                     logger.warning(f"Memory write setup failed for chat {chat_id}: {e}")
