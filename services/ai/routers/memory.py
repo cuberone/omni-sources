@@ -24,9 +24,9 @@ def _require_user_id(request: Request) -> str:
     return user_id
 
 
-def _require_memory_client(request: Request):
+def _require_memory_service(request: Request):
     app_state: AppState = request.app.state
-    client = getattr(app_state, "memory_client", None)
+    client = getattr(app_state, "memory_service", None)
     if client is None:
         raise HTTPException(status_code=503, detail="Memory service not configured")
     return client
@@ -36,7 +36,7 @@ def _require_memory_client(request: Request):
 async def list_memories(request: Request):
     """Return every memory stored for the caller."""
     user_id = _require_user_id(request)
-    client = _require_memory_client(request)
+    client = _require_memory_service(request)
     memories = await client.list(user_id=user_id)
     return {"memories": memories}
 
@@ -45,10 +45,8 @@ async def list_memories(request: Request):
 async def delete_all_memories(request: Request):
     """Delete every memory stored for the caller."""
     user_id = _require_user_id(request)
-    client = _require_memory_client(request)
-    ok = await client.delete_all(user_id=user_id)
-    if not ok:
-        raise HTTPException(status_code=502, detail="Memory service delete failed")
+    client = _require_memory_service(request)
+    await client.delete_all(user_id=user_id)
     return {"status": "deleted"}
 
 
@@ -70,11 +68,9 @@ async def delete_org_agent_memories(
     to admins for manual cleanup of policy-sensitive memories.
     """
     _require_admin(request)
-    client = _require_memory_client(request)
+    client = _require_memory_service(request)
     namespace = f"org_agent:{agent_id}"
-    ok = await client.delete_all(user_id=namespace)
-    if not ok:
-        raise HTTPException(status_code=502, detail="Memory service delete failed")
+    await client.delete_all(user_id=namespace)
     logger.info(f"Purged org-agent memory namespace: {namespace}")
     return {"status": "deleted", "namespace": namespace}
 
@@ -90,11 +86,9 @@ async def delete_user_agent_memories(
     Used by the web layer when a personal agent is deleted.
     """
     _require_admin(request)
-    client = _require_memory_client(request)
+    client = _require_memory_service(request)
     namespace = f"user:{owner_user_id}:agent:{agent_id}"
-    ok = await client.delete_all(user_id=namespace)
-    if not ok:
-        raise HTTPException(status_code=502, detail="Memory service delete failed")
+    await client.delete_all(user_id=namespace)
     logger.info(f"Purged user-agent memory namespace: {namespace}")
     return {"status": "deleted", "namespace": namespace}
 
@@ -120,7 +114,7 @@ async def seed_agent_memory(
     do not linger.
     """
     _require_admin(request)
-    client = _require_memory_client(request)
+    client = _require_memory_service(request)
 
     namespace = (
         f"org_agent:{agent_id}"
@@ -157,7 +151,7 @@ async def delete_memory(
     the delete to mem0.
     """
     user_id = _require_user_id(request)
-    client = _require_memory_client(request)
+    client = _require_memory_service(request)
 
     owned = await client.list(user_id=user_id)
     owned_ids = {m.get("id") for m in owned if isinstance(m, dict)}

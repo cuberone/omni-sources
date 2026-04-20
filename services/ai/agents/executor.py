@@ -220,11 +220,11 @@ async def _run_agent_loop(
     # Memory: resolve effective mode and fetch prior-run memories.
     # UC-A personal agent: user mode capped by org ceiling, scoped to `user:<owner>:agent:<id>`
     # UC-B org agent:      org default only, scoped to `org_agent:<id>`
-    memory_client = getattr(app_state, "memory_client", None)
+    memory_service = getattr(app_state, "memory_service", None)
     memory_key: str | None = None
     effective_mode = "off"
     memories: list[str] = []
-    if memory_client:
+    if memory_service:
         config_repo = ConfigurationRepository()
         org_config = await config_repo.get("memory_mode_default")
         org_default = (org_config or {}).get("value")
@@ -237,7 +237,7 @@ async def _run_agent_loop(
             memory_key = f"user:{agent.user_id}:agent:{agent.id}"
 
         if effective_mode == "full" and memory_key and agent.instructions:
-            memories = await memory_client.search(
+            memories = await memory_service.search(
                 query=agent.instructions, user_id=memory_key, limit=5
             )
 
@@ -472,7 +472,7 @@ async def _run_agent_loop(
     summary = "".join(summary_blocks).strip()
 
     # Memory write (fire-and-forget) — only in 'full' mode
-    if memory_client and memory_key and effective_mode == "full" and summary:
+    if memory_service and memory_key and effective_mode == "full" and summary:
         try:
             turn = [
                 {
@@ -485,7 +485,7 @@ async def _run_agent_loop(
                 },
             ]
             asyncio.create_task(
-                memory_client.add(messages=turn, user_id=memory_key)
+                memory_service.add(messages=turn, user_id=memory_key)
             )
         except Exception as e:
             logger.warning(f"Memory write setup failed for agent {agent.id}: {e}")

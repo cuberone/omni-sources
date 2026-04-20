@@ -1,4 +1,4 @@
-from .client import MemoryClient
 from .mode import resolve_memory_mode
+from .service import MemoryService
 
-__all__ = ["MemoryClient", "resolve_memory_mode"]
+__all__ = ["MemoryService", "resolve_memory_mode"]

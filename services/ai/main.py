@@ -29,8 +29,18 @@ from routers import (
     memory_router,
 )
 
-from config import PORT, MEMORY_SERVICE_URL
-from memory.client import MemoryClient
+from config import (
+    PORT,
+    MEMORY_ENABLED,
+    MEM0AI_DATABASE_PASSWORD,
+    DATABASE_URL,
+)
+from fastapi.concurrency import run_in_threadpool
+from mem0 import Memory
+
+from memory.bootstrap import build_mem0_config, MemoryConfigError
+from memory.role_bootstrap import ensure_mem0ai_role
+from memory.service import MemoryService
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -68,11 +78,32 @@ async def startup_event():
 
             asyncio.create_task(run_agent_scheduler(app.state))
 
-        if MEMORY_SERVICE_URL:
-            app.state.memory_client = MemoryClient(base_url=MEMORY_SERVICE_URL)
-            logger.info(f"Memory client initialized: {MEMORY_SERVICE_URL}")
+        if MEMORY_ENABLED:
+            try:
+                ensure_mem0ai_role(
+                    dsn=DATABASE_URL,
+                    database_name=os.environ["DATABASE_NAME"],
+                    database_username=os.environ["DATABASE_USERNAME"],
+                    mem0ai_password=MEM0AI_DATABASE_PASSWORD,
+                )
+                cfg = await build_mem0_config(
+                    app.state,
+                    database_host=os.environ["DATABASE_HOST"],
+                    database_port=int(os.environ.get("DATABASE_PORT", "5432")),
+                    database_name=os.environ["DATABASE_NAME"],
+                    mem0ai_password=MEM0AI_DATABASE_PASSWORD,  # type: ignore[arg-type]
+                )
+                memory = await run_in_threadpool(Memory.from_config, cfg)
+                app.state.memory_service = MemoryService(
+                    memory, cfg["vector_store"]["config"]
+                )
+                logger.info("Memory service initialized (in-process)")
+            except (MemoryConfigError, Exception) as e:
+                app.state.memory_service = None
+                logger.warning(f"Memory initialization failed: {e}")
         else:
-            logger.info("MEMORY_SERVICE_URL not set — memory feature disabled")
+            app.state.memory_service = None
+            logger.info("MEMORY_ENABLED=false — memory feature disabled")
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")
         raise e
@@ -84,12 +115,6 @@ async def shutdown_event():
     if hasattr(app.state, "embedding_queue"):
         await app.state.embedding_queue.stop()
     await shutdown_providers(app.state)
-    memory_client = getattr(app.state, "memory_client", None)
-    if memory_client is not None:
-        try:
-            await memory_client.aclose()
-        except Exception as e:
-            logger.warning(f"Failed to close memory client: {e}")
 
 
 if __name__ == "__main__":

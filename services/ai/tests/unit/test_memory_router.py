@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 from routers.memory import router as memory_router
 
 
-class _FakeMemoryClient:
-    """In-memory stand-in for MemoryClient that scopes by user_id."""
+class _FakeMemoryService:
+    """In-memory stand-in for MemoryService that scopes by user_id."""
 
     def __init__(self):
         self._store: dict[str, list[dict]] = {}
@@ -33,13 +33,13 @@ class _FakeMemoryClient:
                     return True
         return False
 
-    async def delete_all(self, user_id: str) -> bool:
+    async def delete_all(self, user_id: str) -> int:
         self.delete_all_calls.append(user_id)
-        self._store.pop(user_id, None)
-        return True
+        purged = len(self._store.pop(user_id, []))
+        return purged
 
 
-def _build_app(memory_client: _FakeMemoryClient | None) -> TestClient:
+def _build_app(memory_service: _FakeMemoryService | None) -> TestClient:
     app = FastAPI()
     app.include_router(memory_router)
 
@@ -47,8 +47,8 @@ def _build_app(memory_client: _FakeMemoryClient | None) -> TestClient:
         pass
 
     state = _State()
-    if memory_client is not None:
-        state.memory_client = memory_client
+    if memory_service is not None:
+        state.memory_service = memory_service
     app.state = state
     return TestClient(app)
 
@@ -56,7 +56,7 @@ def _build_app(memory_client: _FakeMemoryClient | None) -> TestClient:
 @pytest.mark.unit
 class TestMemoryRouter:
     def test_list_requires_user_id_header(self):
-        client = _build_app(_FakeMemoryClient())
+        client = _build_app(_FakeMemoryService())
         resp = client.get("/memories")
         assert resp.status_code == 401
 
@@ -66,7 +66,7 @@ class TestMemoryRouter:
         assert resp.status_code == 503
 
     def test_list_returns_only_callers_memories(self):
-        mem = _FakeMemoryClient()
+        mem = _FakeMemoryService()
         mem.seed("alice", [{"id": "m1", "memory": "alice secret"}])
         mem.seed("bob", [{"id": "m2", "memory": "bob secret"}])
         client = _build_app(mem)
@@ -78,7 +78,7 @@ class TestMemoryRouter:
 
     def test_delete_one_rejects_non_owned_id(self):
         """User A cannot delete user B's memory — must return 404 and not call delete."""
-        mem = _FakeMemoryClient()
+        mem = _FakeMemoryService()
         mem.seed("alice", [{"id": "m1", "memory": "alice"}])
         mem.seed("bob", [{"id": "m2", "memory": "bob"}])
         client = _build_app(mem)
@@ -89,7 +89,7 @@ class TestMemoryRouter:
         assert mem.delete_calls == []
 
     def test_delete_one_succeeds_for_owned_id(self):
-        mem = _FakeMemoryClient()
+        mem = _FakeMemoryService()
         mem.seed("alice", [{"id": "m1", "memory": "alice"}])
         client = _build_app(mem)
 
@@ -98,7 +98,7 @@ class TestMemoryRouter:
         assert mem.delete_calls == ["m1"]
 
     def test_delete_all_passes_callers_user_id(self):
-        mem = _FakeMemoryClient()
+        mem = _FakeMemoryService()
         mem.seed("alice", [{"id": "m1", "memory": "alice"}])
         mem.seed("bob", [{"id": "m2", "memory": "bob"}])
         client = _build_app(mem)
@@ -110,7 +110,7 @@ class TestMemoryRouter:
         assert any(m["id"] == "m2" for m in mem._store.get("bob", []))
 
     def test_delete_org_agent_requires_admin_role(self):
-        mem = _FakeMemoryClient()
+        mem = _FakeMemoryService()
         mem.seed("org_agent:agent-123", [{"id": "m1", "memory": "org secret"}])
         client = _build_app(mem)
 
@@ -129,7 +129,7 @@ class TestMemoryRouter:
         assert mem.delete_all_calls == []
 
     def test_delete_org_agent_purges_namespace_for_admin(self):
-        mem = _FakeMemoryClient()
+        mem = _FakeMemoryService()
         mem.seed("org_agent:agent-123", [{"id": "m1", "memory": "org secret"}])
         mem.seed("alice", [{"id": "m2", "memory": "alice"}])
         client = _build_app(mem)
