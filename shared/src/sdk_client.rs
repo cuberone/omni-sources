@@ -1,7 +1,10 @@
 use anyhow::Result;
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::models::{ConnectorEvent, ConnectorManifest, ServiceCredentials, Source, SyncType};
@@ -53,20 +56,50 @@ async fn ensure_ok(response: Response, operation: &'static str) -> SdkResult<Res
     })
 }
 
+type BufferKey = (String, String); // (sync_run_id, source_id)
+
+struct BufferEntry {
+    events: Vec<ConnectorEvent>,
+    oldest_at: Instant,
+}
+
+/// Per-`SyncType` buffer thresholds: (size, time). `None` time means flush-on-emit.
+fn thresholds_for(sync_type: SyncType) -> (usize, Option<Duration>) {
+    match sync_type {
+        SyncType::Full => (500, Some(Duration::from_secs(300))),
+        SyncType::Incremental => (100, Some(Duration::from_secs(60))),
+        SyncType::Realtime => (1, None),
+    }
+}
+
 /// HTTP client for communicating with connector-manager SDK endpoints.
 /// This is the standard way for connectors to interact with the connector-manager
 /// for emitting events, storing content, and reporting sync status.
+///
+/// `emit_event()` buffers events in memory and auto-flushes using per-`SyncType`
+/// rules (see [`thresholds_for`]). All clones share the buffer.
+///
+/// The SDK learns each sync's type from `create_sync_run` (auto-registered) or
+/// from an explicit `register_sync` call (used by connectors whose sync was
+/// created by connector-manager, e.g. scheduled or webhook-triggered syncs).
+/// Unknown sync_run_ids default to `Incremental` — safe middle ground.
+///
+/// **Invariant**: any operation that persists a checkpoint or terminates a sync
+/// (`save_connector_state`, `complete`, `fail`) must flush the relevant buffered
+/// events first — otherwise a crash after checkpoint would lose those events forever.
 #[derive(Clone)]
 pub struct SdkClient {
     client: Client,
     base_url: String,
+    event_buffer: Arc<Mutex<HashMap<BufferKey, BufferEntry>>>,
+    sync_types: Arc<Mutex<HashMap<String, SyncType>>>,
 }
 
 #[derive(Debug, Serialize)]
-struct EmitEventRequest {
+struct EmitBatchRequest {
     sync_run_id: String,
     source_id: String,
-    event: ConnectorEvent,
+    events: Vec<ConnectorEvent>,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,7 +173,29 @@ impl SdkClient {
         Self {
             client: Client::new(),
             base_url: connector_manager_url.trim_end_matches('/').to_string(),
+            event_buffer: Arc::new(Mutex::new(HashMap::new())),
+            sync_types: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Register a sync's type so subsequent `emit_event` calls apply the right
+    /// batching rule. Call this from your sync handler before emitting — or,
+    /// if you created the sync via `create_sync_run`, the registration happens
+    /// automatically.
+    pub async fn register_sync(&self, sync_run_id: &str, sync_type: SyncType) {
+        self.sync_types
+            .lock()
+            .await
+            .insert(sync_run_id.to_string(), sync_type);
+    }
+
+    async fn sync_type_for(&self, sync_run_id: &str) -> SyncType {
+        self.sync_types
+            .lock()
+            .await
+            .get(sync_run_id)
+            .copied()
+            .unwrap_or(SyncType::Incremental)
     }
 
     pub fn from_env() -> Result<Self> {
@@ -207,28 +262,111 @@ impl SdkClient {
         Ok(result.text)
     }
 
-    /// Emit a document event to the queue
+    /// Emit a document event. Events are buffered in memory and auto-flushed
+    /// according to the sync's type (see [`thresholds_for`]):
+    /// - Full: 500 events or 5min, whichever first
+    /// - Incremental: 100 events or 60s
+    /// - Realtime: flush on every emit
+    ///
+    /// If an auto-flush fails, the error is returned to the caller so the connector
+    /// knows the event was not persisted before checkpointing.
     pub async fn emit_event(
         &self,
         sync_run_id: &str,
         source_id: &str,
         event: ConnectorEvent,
     ) -> SdkResult<()> {
-        debug!("SDK: Emitting event for sync_run={}", sync_run_id);
+        let sync_type = self.sync_type_for(sync_run_id).await;
+        let (size_threshold, time_threshold) = thresholds_for(sync_type);
 
-        let request = EmitEventRequest {
+        let key = (sync_run_id.to_string(), source_id.to_string());
+        let should_flush = {
+            let mut buffer = self.event_buffer.lock().await;
+            let entry = buffer.entry(key).or_insert_with(|| BufferEntry {
+                events: Vec::new(),
+                oldest_at: Instant::now(),
+            });
+            entry.events.push(event);
+
+            let size_hit = entry.events.len() >= size_threshold;
+            let time_hit = time_threshold
+                .map(|t| entry.oldest_at.elapsed() >= t)
+                .unwrap_or(false);
+            size_hit || time_hit
+        };
+
+        if should_flush {
+            self.flush_events(sync_run_id, source_id).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Flush buffered events for a specific (sync_run_id, source_id) pair.
+    pub async fn flush_events(&self, sync_run_id: &str, source_id: &str) -> Result<()> {
+        let key = (sync_run_id.to_string(), source_id.to_string());
+        let events = {
+            let mut buffer = self.event_buffer.lock().await;
+            buffer
+                .remove(&key)
+                .map(|entry| entry.events)
+                .unwrap_or_default()
+        };
+
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        let batch_size = events.len();
+        debug!(
+            "SDK: Flushing {} events for sync_run={}, source={}",
+            batch_size, sync_run_id, source_id
+        );
+
+        let request = EmitBatchRequest {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
-            event,
+            events,
         };
 
         let response = self
             .client
-            .post(format!("{}/sdk/events", self.base_url))
+            .post(format!("{}/sdk/events/batch", self.base_url))
             .json(&request)
             .send()
             .await?;
-        ensure_ok(response, "emit_event").await?;
+        ensure_ok(response, "flush_events").await?;
+        Ok(())
+    }
+
+    /// Flush all buffered events for a given source_id across any sync_runs.
+    /// Used before persisting connector state for that source.
+    pub async fn flush_source(&self, source_id: &str) -> Result<()> {
+        let keys: Vec<BufferKey> = {
+            let buffer = self.event_buffer.lock().await;
+            buffer
+                .keys()
+                .filter(|(_, sid)| sid == source_id)
+                .cloned()
+                .collect()
+        };
+
+        for (sync_run_id, sid) in keys {
+            self.flush_events(&sync_run_id, &sid).await?;
+        }
+        Ok(())
+    }
+
+    /// Flush all buffered events across all (sync_run_id, source_id) pairs.
+    pub async fn flush_all(&self) -> Result<()> {
+        let keys: Vec<BufferKey> = {
+            let buffer = self.event_buffer.lock().await;
+            buffer.keys().cloned().collect()
+        };
+
+        for (sync_run_id, source_id) in keys {
+            self.flush_events(&sync_run_id, &source_id).await?;
+        }
         Ok(())
     }
 
@@ -322,7 +460,8 @@ impl SdkClient {
         Ok(())
     }
 
-    /// Mark sync as completed
+    /// Mark sync as completed. Flushes any buffered events first so the
+    /// completion never races ahead of the final events for this sync.
     pub async fn complete(
         &self,
         sync_run_id: &str,
@@ -331,6 +470,8 @@ impl SdkClient {
         new_state: Option<serde_json::Value>,
     ) -> SdkResult<()> {
         debug!("SDK: Completing sync_run={}", sync_run_id);
+
+        self.flush_all().await?;
 
         let request = CompleteRequest {
             documents_scanned: Some(documents_scanned),
@@ -351,9 +492,18 @@ impl SdkClient {
         Ok(())
     }
 
-    /// Mark sync as failed
+    /// Mark sync as failed. Best-effort flush of buffered events first — if
+    /// the flush itself fails we log and proceed, because marking the sync as
+    /// failed is more important than preserving partial progress.
     pub async fn fail(&self, sync_run_id: &str, error: &str) -> SdkResult<()> {
         debug!("SDK: Failing sync_run={}: {}", sync_run_id, error);
+
+        if let Err(e) = self.flush_all().await {
+            warn!(
+                "SDK: flush before fail() failed (continuing): sync_run={}: {}",
+                sync_run_id, e
+            );
+        }
 
         let request = FailRequest {
             error: error.to_string(),
@@ -437,6 +587,7 @@ impl SdkClient {
             .await?;
         let response = ensure_ok(response, "create_sync_run").await?;
         let result: CreateSyncResponse = response.json().await?;
+        self.register_sync(&result.sync_run_id, sync_type).await;
         Ok(result.sync_run_id)
     }
 
@@ -499,13 +650,18 @@ impl SdkClient {
         Ok(result.sync_run_id)
     }
 
-    /// Save connector state for a source
+    /// Save connector state for a source. **Critical**: buffered events for
+    /// this source are flushed before the checkpoint is persisted. Without
+    /// this, a crash after save_state could lose events that the connector
+    /// already considers emitted (the next run resumes past them).
     pub async fn save_connector_state(
         &self,
         source_id: &str,
         state: serde_json::Value,
     ) -> SdkResult<()> {
         debug!("SDK: Saving connector state for source_id={}", source_id);
+
+        self.flush_source(source_id).await?;
 
         let response = self
             .client
