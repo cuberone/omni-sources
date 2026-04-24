@@ -1,15 +1,15 @@
 use crate::connector::Connector;
 use crate::context::SyncContext;
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, CancelResponse, SyncRequest, SyncResponse,
-    SyncStatusResponse,
+    ActionRequest, ActionResponse, ActionResult, CancelRequest, CancelResponse, SyncRequest,
+    SyncResponse, SyncStatusResponse,
 };
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     middleware,
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
@@ -119,13 +119,15 @@ pub fn create_router<C>(connector: Arc<C>, sdk_client: SdkClient, connector_url:
 where
     C: Connector,
 {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health::<C>))
         .route("/manifest", get(manifest::<C>))
         .route("/sync", post(trigger_sync::<C>))
         .route("/sync/:sync_run_id", get(sync_status::<C>))
         .route("/cancel", post(cancel_sync::<C>))
-        .route("/action", post(execute_action::<C>))
+        .route("/action", post(execute_action::<C>));
+
+    router
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
@@ -149,6 +151,25 @@ pub async fn serve_with_config<C>(connector: C, config: ServerConfig) -> Result<
 where
     C: Connector,
 {
+    serve_with_extra_routes(connector, config, Router::new()).await
+}
+
+/// Start the connector server with additional HTTP routes merged in alongside
+/// the SDK-provided routes. Extra paths must not collide with the SDK's
+/// reserved paths (`/health`, `/manifest`, `/sync`, `/sync/:sync_run_id`,
+/// `/cancel`, `/action`) — collisions cause axum to panic at startup.
+///
+/// Connectors that need to return binary data from actions should return
+/// `ActionResult::Binary` from `execute_action` instead of using extra routes
+/// for `/action`.
+pub async fn serve_with_extra_routes<C>(
+    connector: C,
+    config: ServerConfig,
+    extra_routes: Router,
+) -> Result<()>
+where
+    C: Connector,
+{
     let connector = Arc::new(connector);
     let sdk_client = SdkClient::from_env()?;
 
@@ -165,7 +186,7 @@ where
         config.connector_url.clone(),
     );
 
-    let app = create_router(connector, sdk_client, config.connector_url);
+    let app = create_router(connector, sdk_client, config.connector_url).merge(extra_routes);
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -373,7 +394,7 @@ where
 async fn execute_action<C>(
     State(state): State<Arc<ServerState<C>>>,
     Json(request): Json<ActionRequest>,
-) -> impl IntoResponse
+) -> Response
 where
     C: Connector,
 {
@@ -384,8 +405,48 @@ where
         .execute_action(&request.action, request.params, request.credentials)
         .await
     {
-        Ok(response) => Json(response),
-        Err(error) => Json(ActionResponse::failure(error.to_string())),
+        Ok(ActionResult::Json(value)) => {
+            let resp = ActionResponse::success(value);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_string(&resp).unwrap_or_default(),
+                ))
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(axum::body::Body::from(""))
+                        .unwrap()
+                })
+        }
+        Ok(ActionResult::Binary(bytes, content_type, file_name)) => Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", content_type)
+            .header("Content-Length", bytes.len())
+            .header("X-File-Name", file_name)
+            .body(axum::body::Body::from(bytes))
+            .unwrap_or_else(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(axum::body::Body::from(""))
+                    .unwrap()
+            }),
+        Err(error) => {
+            let resp = ActionResponse::failure(error.to_string());
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_string(&resp).unwrap_or_default(),
+                ))
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(axum::body::Body::from(""))
+                        .unwrap()
+                })
+        }
     }
 }
 

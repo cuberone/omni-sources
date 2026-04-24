@@ -1,5 +1,5 @@
 use crate::context::SyncContext;
-use crate::models::ActionResponse;
+use crate::models::ActionResult;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -85,8 +85,8 @@ pub trait Connector: Send + Sync + 'static {
         action: &str,
         _params: JsonValue,
         _credentials: JsonValue,
-    ) -> Result<ActionResponse> {
-        Ok(ActionResponse::not_supported(action))
+    ) -> Result<ActionResult> {
+        Err(anyhow::anyhow!("Action not supported: {}", action))
     }
 
     async fn build_manifest(&self, connector_url: String) -> ConnectorManifest {

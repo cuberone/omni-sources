@@ -9,6 +9,10 @@
 //! driven by a channel — tests can hold a sync in flight, signal it, or
 //! have it panic, to drive edge cases in the SDK server.
 
+// This module is shared across multiple integration test files; not all
+// tests use every helper.
+#![allow(dead_code)]
+
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,7 +26,7 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use omni_connector_sdk::{ActionResponse, Connector, SourceType, SyncContext};
+use omni_connector_sdk::{ActionResult, Connector, SourceType, SyncContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use shared::SdkClient;
@@ -290,7 +294,7 @@ impl Connector for TestConnector {
         action: &str,
         _params: JsonValue,
         _credentials: JsonValue,
-    ) -> Result<ActionResponse> {
-        Ok(ActionResponse::not_supported(action))
+    ) -> Result<ActionResult> {
+        Err(anyhow::anyhow!("Action not supported: {}", action))
     }
 }
