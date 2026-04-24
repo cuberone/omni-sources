@@ -26,7 +26,7 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use omni_connector_sdk::{ActionResult, Connector, SourceType, SyncContext};
+use omni_connector_sdk::{models::ActionResponse, Connector, SourceType, SyncContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use shared::SdkClient;
@@ -294,7 +294,7 @@ impl Connector for TestConnector {
         action: &str,
         _params: JsonValue,
         _credentials: JsonValue,
-    ) -> Result<ActionResult> {
-        Err(anyhow::anyhow!("Action not supported: {}", action))
+    ) -> Result<axum::response::Response> {
+        Ok(ActionResponse::not_supported(action).into_response_with_status(StatusCode::NOT_FOUND))
     }
 }

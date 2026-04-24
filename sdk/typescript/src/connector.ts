@@ -2,12 +2,23 @@ import type { SyncContext } from './context.js';
 import type {
   ConnectorManifest,
   ActionDefinition,
-  ActionResponse,
   SearchOperator,
 } from './models.js';
-import { createActionResponseNotSupported } from './models.js';
+import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
 import { getLogger } from './logger.js';
+
+export interface McpAdapter {
+  getActionDefinitions(): Promise<ActionDefinition[]>;
+  getResourceDefinitions(): Promise<unknown[]>;
+  getPromptDefinitions(): Promise<unknown[]>;
+  executeTool(
+    name: string,
+    params: Record<string, unknown>,
+  ): Promise<ActionResponse>;
+  readResource(uri: string): Promise<unknown>;
+  getPrompt(name: string, args?: Record<string, string>): Promise<unknown>;
+}
 
 export interface ServeOptions {
   port?: number;
@@ -48,7 +59,7 @@ export abstract class Connector<
     return undefined;
   }
 
-  async getMcpAdapter(): Promise<{ getActionDefinitions(): Promise<ActionDefinition[]>; getResourceDefinitions(): Promise<unknown[]>; getPromptDefinitions(): Promise<unknown[]>; executeTool(name: string, params: Record<string, unknown>): Promise<ActionResponse>; readResource(uri: string): Promise<unknown>; getPrompt(name: string, args?: Record<string, string>): Promise<unknown> } | undefined> {
+  async getMcpAdapter(): Promise<McpAdapter | undefined> {
     if (this._mcpAdapter !== null) {
       return this._mcpAdapter as ReturnType<typeof this.getMcpAdapter> extends Promise<infer T> ? T : never;
     }
@@ -116,17 +127,18 @@ export abstract class Connector<
     action: string,
     params: Record<string, unknown>,
     credentials: TCredentials
-  ): Promise<ActionResponse> {
+  ): Promise<Response> {
     const adapter = await this.getMcpAdapter();
     if (adapter) {
       const mcpActions = await adapter.getActionDefinitions();
       const mcpToolNames = new Set(mcpActions.map((a) => a.name));
       if (mcpToolNames.has(action)) {
         this.prepareMcpEnv(credentials);
-        return adapter.executeTool(action, params);
+        const response = await adapter.executeTool(action, params);
+        return response.toResponse();
       }
     }
-    return createActionResponseNotSupported(action);
+    return ActionResponse.notSupported(action).toResponse(404);
   }
 
   serve(options: ServeOptions = {}): void {

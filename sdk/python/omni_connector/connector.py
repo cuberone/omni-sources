@@ -5,10 +5,17 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from .context import SyncContext
-from .models import ActionDefinition, ActionResponse, ConnectorManifest, SearchOperator
+from .models import (
+    ActionDefinition,
+    ActionResponse,
+    ConnectorManifest,
+    SearchOperator,
+)
 
 if TYPE_CHECKING:
     from mcp.client.stdio import StdioServerParameters
+
+    from fastapi.responses import JSONResponse
 
     from .mcp_adapter import McpAdapter
 
@@ -211,21 +218,16 @@ class Connector(ABC):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse:
-        """
-        Execute a connector action.
+    ) -> JSONResponse:
 
-        Override this method to implement connector-specific actions.
-        If MCP is enabled and the action matches an MCP tool, it is
-        dispatched to the MCP server automatically.
-        """
         adapter = self.mcp_adapter
         if adapter is not None:
             env = self.prepare_mcp_env(credentials)
             mcp_tool_names = {a.name for a in await adapter.get_action_definitions(env)}
             if action in mcp_tool_names:
-                return await adapter.execute_tool(action, params, env)
-        return ActionResponse.not_supported(action)
+                response = await adapter.execute_tool(action, params, env)
+                return JSONResponse(content=response.model_dump())
+        return ActionResponse.not_supported(action).to_response(status_code=404)
 
     def serve(self, port: int = 8000, host: str = "0.0.0.0") -> None:
         """Start the HTTP server for this connector."""

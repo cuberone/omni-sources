@@ -27,9 +27,7 @@ export {
   ActionResponseSchema,
   createSyncResponseStarted,
   createSyncResponseError,
-  createActionResponseSuccess,
-  createActionResponseFailure,
-  createActionResponseNotSupported,
+  ActionResponse,
   serializeConnectorEvent,
   type DocumentMetadata,
   type DocumentPermissions,
@@ -46,7 +44,6 @@ export {
   type CancelRequest,
   type CancelResponse,
   type ActionRequest,
-  type ActionResponse,
   type ConnectorEventPayload,
 } from './models.js';
 

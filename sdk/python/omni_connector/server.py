@@ -13,7 +13,6 @@ from .context import SyncContext
 from .exceptions import SdkClientError
 from .models import (
     ActionRequest,
-    ActionResponse,
     CancelRequest,
     CancelResponse,
     PromptRequest,
@@ -218,21 +217,13 @@ def create_app(connector: "Connector") -> FastAPI:
         return CancelResponse(status="not_found").model_dump()
 
     @app.post("/action")
-    async def execute_action(request: ActionRequest):
+    async def execute_action(request: ActionRequest) -> Response:
         logger.info("Action requested: %s", request.action)
-
-        try:
-            response = await connector.execute_action(
-                request.action,
-                request.params,
-                request.credentials,
-            )
-            if isinstance(response, Response):
-                return response
-            return response.model_dump()
-        except Exception as e:
-            logger.error("Action %s failed: %s", request.action, e)
-            return ActionResponse.failure(str(e)).model_dump()
+        return await connector.execute_action(
+            request.action,
+            request.params,
+            request.credentials,
+        )
 
     @app.post("/resource")
     async def read_resource(request: ResourceRequest) -> JSONResponse:
