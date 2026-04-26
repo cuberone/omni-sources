@@ -1,6 +1,8 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use omni_connector_sdk::{Connector, SdkClient, SourceType, SyncContext, SyncType};
+use omni_connector_sdk::{
+    Connector, SdkClient, ServiceCredentials, Source, SourceType, SyncContext, SyncType,
+};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -62,11 +64,13 @@ impl Connector for WebConnector {
 
     async fn sync(
         &self,
-        source_config: WebSourceConfig,
-        _credentials: JsonValue,
+        source: Source,
+        _credentials: Option<ServiceCredentials>,
         state: Option<WebConnectorState>,
         ctx: SyncContext,
     ) -> Result<()> {
+        let source_config: WebSourceConfig =
+            serde_json::from_value(source.config).context("Failed to decode web source config")?;
         self.sync_manager.run_sync(source_config, state, ctx).await
     }
 }

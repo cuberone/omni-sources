@@ -294,31 +294,39 @@ where
         .get_source(&source_id)
         .await
         .map_err(map_source_fetch_error)?;
-    let source_config = decode::<C::Config>(&source.config, "source config").map_err(|error| {
+
+    let credentials = if state.connector.requires_credentials() {
+        Some(
+            state
+                .sdk_client
+                .get_credentials(&source_id)
+                .await
+                .map_err(map_source_fetch_error)?,
+        )
+    } else {
+        None
+    };
+
+    // Boundary validation: probe-decode source.config and creds.credentials
+    // against the connector's declared shapes. The decoded values are dropped
+    // — the connector receives the full structs and re-decodes its typed view
+    // inside `sync()` if it wants one. This catches malformed payloads at
+    // dispatch time so a bad source returns 400 right away.
+    decode::<C::Config>(&source.config, "source config").map_err(|error| {
         (
             StatusCode::BAD_REQUEST,
             Json(SyncResponse::error(error.to_string())),
         )
     })?;
-
-    let raw_credentials = if state.connector.requires_credentials() {
-        state
-            .sdk_client
-            .get_credentials(&source_id)
-            .await
-            .map_err(map_source_fetch_error)?
-            .credentials
-    } else {
-        serde_json::json!({})
-    };
-
-    let typed_credentials =
-        decode::<C::Credentials>(&raw_credentials, "credentials").map_err(|error| {
+    if let Some(creds) = &credentials {
+        decode::<C::Credentials>(&creds.credentials, "credentials").map_err(|error| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(SyncResponse::error(error.to_string())),
             )
         })?;
+    }
+
     let typed_state =
         decode_optional::<C::State>(source.connector_state.as_ref(), "connector state").map_err(
             |error| {
@@ -349,7 +357,7 @@ where
         // completes — including on panic, which unwinds through locals.
         let _slot = guard;
         let result = connector
-            .sync(source_config, typed_credentials, typed_state, ctx.clone())
+            .sync(source, credentials, typed_state, ctx.clone())
             .await;
 
         if let Err(error) = result {

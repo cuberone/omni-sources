@@ -4,11 +4,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use axum::{routing, Router};
 use axum_test::{TestServer, TestServerConfig};
 use common::{GetSourceBehavior, MockConnectorManager, SyncBehavior, TestConnector};
-use omni_connector_sdk::{create_router, Connector, SourceType, SyncContext};
+use omni_connector_sdk::{
+    create_router, Connector, ServiceCredentials, Source, SourceType, SyncContext,
+};
 use serde_json::{json, Value as JsonValue};
 use tokio::sync::Notify;
 
@@ -219,7 +220,8 @@ async fn t5_sync_returns_500_on_upstream_error() -> Result<()> {
 
 #[tokio::test]
 async fn t6_sync_returns_400_on_bad_config() -> Result<()> {
-    // TestConfig is an object, but the mock serves a string — decode fails.
+    // TestConfig is an object, but the mock serves a string — SDK boundary
+    // decode fails before any sync is spawned.
     let mock = MockConnectorManager::spawn().await;
     mock.set_source_behavior(GetSourceBehavior::BadConfig);
 
@@ -457,8 +459,8 @@ async fn t14_action_success_returns_200() -> Result<()> {
 
         async fn sync(
             &self,
-            _config: Self::Config,
-            _credentials: Self::Credentials,
+            _source: Source,
+            _credentials: Option<ServiceCredentials>,
             _state: Option<Self::State>,
             _ctx: SyncContext,
         ) -> Result<()> {
@@ -537,8 +539,8 @@ async fn t15_action_exception_returns_500() -> Result<()> {
 
         async fn sync(
             &self,
-            _config: Self::Config,
-            _credentials: Self::Credentials,
+            _source: Source,
+            _credentials: Option<ServiceCredentials>,
             _state: Option<Self::State>,
             _ctx: SyncContext,
         ) -> Result<()> {

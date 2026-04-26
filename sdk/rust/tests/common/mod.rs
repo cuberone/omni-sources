@@ -26,7 +26,9 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use omni_connector_sdk::{models::ActionResponse, Connector, SourceType, SyncContext};
+use omni_connector_sdk::{
+    models::ActionResponse, Connector, ServiceCredentials, Source, SourceType, SyncContext,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use shared::SdkClient;
@@ -264,8 +266,8 @@ impl Connector for TestConnector {
 
     async fn sync(
         &self,
-        _config: Self::Config,
-        _credentials: Self::Credentials,
+        _source: Source,
+        _credentials: Option<ServiceCredentials>,
         _state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()> {

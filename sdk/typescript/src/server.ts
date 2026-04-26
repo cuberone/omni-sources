@@ -96,6 +96,8 @@ export function createServer(connector: Connector): Express {
       sync_run_id: syncRunId,
       source_id: sourceId,
       sync_mode: syncModeStr,
+      documents_scanned: documentsScanned,
+      documents_updated: documentsUpdated,
     } = parseResult.data;
 
     const isValidSyncMode = (Object.values(SyncMode) as string[]).includes(syncModeStr);
@@ -147,7 +149,9 @@ export function createServer(connector: Connector): Express {
       syncRunId,
       sourceId,
       sourceData.state ?? undefined,
-      syncMode
+      syncMode,
+      documentsScanned,
+      documentsUpdated
     );
     activeSyncs.set(sourceId, ctx);
 

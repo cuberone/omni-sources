@@ -58,14 +58,6 @@ impl SyncContext {
         self.cancelled.load(Ordering::SeqCst)
     }
 
-    /// Returns a clone of the cancellation flag. Lets a connector share the
-    /// SDK's source-of-truth with nested helpers that need to poll
-    /// cancellation without threading `&SyncContext` through their
-    /// signatures.
-    pub fn cancelled_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.cancelled)
-    }
-
     /// Emit a single event. Events are buffered in memory and auto-flushed
     /// according to the sync's mode (see [`thresholds_for`]):
     /// - Full: 500 events or 5min, whichever first
@@ -121,22 +113,19 @@ impl SyncContext {
         Ok(())
     }
 
+    pub async fn increment_updated(&self, count: i32) -> Result<()> {
+        self.sdk_client
+            .increment_updated(&self.sync_run_id, count)
+            .await?;
+        Ok(())
+    }
+
     /// Mark sync as completed. Flushes any buffered events first so the
     /// completion never races ahead of the final events for this sync.
-    pub async fn complete(
-        &self,
-        documents_scanned: i32,
-        documents_updated: i32,
-        new_state: Option<serde_json::Value>,
-    ) -> Result<()> {
-        self.sdk_client
-            .complete(
-                &self.sync_run_id,
-                documents_scanned,
-                documents_updated,
-                new_state,
-            )
-            .await?;
+    /// Status flip only — counts come from `increment_scanned`/`updated`,
+    /// connector state from `save_connector_state`.
+    pub async fn complete(&self) -> Result<()> {
+        self.sdk_client.complete(&self.sync_run_id).await?;
         Ok(())
     }
 

@@ -1,6 +1,8 @@
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use omni_connector_sdk::{Connector, SourceType, SyncContext, SyncType};
+use omni_connector_sdk::{
+    Connector, ServiceCredentials, Source, SourceType, SyncContext, SyncType,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -67,12 +69,15 @@ impl Connector for FirefliesConnector {
 
     async fn sync(
         &self,
-        _source_config: Self::Config,
-        credentials: Self::Credentials,
+        _source: Source,
+        credentials: Option<ServiceCredentials>,
         state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()> {
-        run_sync(&self.client, &credentials.api_key, state, ctx).await
+        let creds = credentials.ok_or_else(|| anyhow!("Fireflies sync requires credentials"))?;
+        let typed: FirefliesCredentials = serde_json::from_value(creds.credentials)
+            .context("Failed to decode Fireflies credentials")?;
+        run_sync(&self.client, &typed.api_key, state, ctx).await
     }
 
     async fn cancel(&self, _sync_run_id: &str) -> bool {
