@@ -149,3 +149,87 @@ describe('SyncContext.emit — title shim', () => {
     expect(captured[0].metadata?.title).toBe('Updated Title');
   });
 });
+
+describe('SyncContext.shouldIndexUser', () => {
+  function makeCtx(opts: {
+    mode?: 'all' | 'whitelist' | 'blacklist';
+    whitelist?: string[] | null;
+    blacklist?: string[] | null;
+  }): SyncContext {
+    return new SyncContext(
+      new SdkClient(BASE_URL),
+      'sync',
+      'source',
+      undefined,
+      SyncMode.INCREMENTAL,
+      0,
+      0,
+      {
+        userFilterMode: opts.mode ?? 'all',
+        userWhitelist: opts.whitelist ?? null,
+        userBlacklist: opts.blacklist ?? null,
+      }
+    );
+  }
+
+  it('returns true for everyone in ALL mode (including empty email)', () => {
+    const ctx = makeCtx({ mode: 'all' });
+    expect(ctx.shouldIndexUser('alice@example.com')).toBe(true);
+    expect(ctx.shouldIndexUser('bob@example.com')).toBe(true);
+    expect(ctx.shouldIndexUser('')).toBe(true);
+  });
+
+  it('admits only whitelist members in WHITELIST mode (case-insensitive)', () => {
+    const ctx = makeCtx({
+      mode: 'whitelist',
+      whitelist: ['Alice@Example.COM'],
+    });
+    expect(ctx.shouldIndexUser('alice@example.com')).toBe(true);
+    expect(ctx.shouldIndexUser('ALICE@example.com')).toBe(true);
+    expect(ctx.shouldIndexUser('bob@example.com')).toBe(false);
+    expect(ctx.shouldIndexUser('')).toBe(false);
+  });
+
+  it('rejects only blacklist members in BLACKLIST mode (case-insensitive)', () => {
+    const ctx = makeCtx({
+      mode: 'blacklist',
+      blacklist: ['ex@example.com'],
+    });
+    expect(ctx.shouldIndexUser('ex@example.com')).toBe(false);
+    expect(ctx.shouldIndexUser('EX@example.com')).toBe(false);
+    expect(ctx.shouldIndexUser('alice@example.com')).toBe(true);
+    expect(ctx.shouldIndexUser('')).toBe(false);
+  });
+
+  it('treats null lists as empty', () => {
+    const wl = makeCtx({ mode: 'whitelist', whitelist: null });
+    expect(wl.shouldIndexUser('alice@example.com')).toBe(false);
+    const bl = makeCtx({ mode: 'blacklist', blacklist: null });
+    expect(bl.shouldIndexUser('alice@example.com')).toBe(true);
+  });
+});
+
+describe('SyncContext.sourceType', () => {
+  it('exposes source_type passed via the optional bag', () => {
+    const ctx = new SyncContext(
+      new SdkClient(BASE_URL),
+      'sync',
+      'source',
+      undefined,
+      SyncMode.INCREMENTAL,
+      0,
+      0,
+      { sourceType: 'linear' }
+    );
+    expect(ctx.sourceType).toBe('linear');
+  });
+
+  it('defaults to null when not provided', () => {
+    const ctx = new SyncContext(
+      new SdkClient(BASE_URL),
+      'sync',
+      'source'
+    );
+    expect(ctx.sourceType).toBeNull();
+  });
+});

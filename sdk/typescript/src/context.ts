@@ -2,6 +2,7 @@ import type { SdkClient } from './client.js';
 import {
   EventType,
   SyncMode,
+  UserFilterMode,
   type Document,
   type DocumentMetadata,
   type DocumentPermissions,
@@ -34,6 +35,10 @@ export class SyncContext {
   private readonly bufferTimeThresholdMs: number | null;
   private eventBuffer: ConnectorEventPayload[] = [];
   private oldestEventAt: number | null = null;
+  private readonly _sourceType: string | null;
+  private readonly _userFilterMode: UserFilterMode;
+  private readonly _userWhitelist: ReadonlySet<string>;
+  private readonly _userBlacklist: ReadonlySet<string>;
 
   constructor(
     client: SdkClient,
@@ -42,7 +47,13 @@ export class SyncContext {
     state?: Record<string, unknown>,
     syncMode: SyncMode = SyncMode.INCREMENTAL,
     documentsScanned = 0,
-    documentsUpdated = 0
+    documentsUpdated = 0,
+    options?: {
+      sourceType?: string | null;
+      userFilterMode?: UserFilterMode;
+      userWhitelist?: string[] | null;
+      userBlacklist?: string[] | null;
+    }
   ) {
     this.client = client;
     this._syncRunId = syncRunId;
@@ -58,6 +69,17 @@ export class SyncContext {
     // the manager's running tally rather than restarting at zero.
     this._documentsScanned = documentsScanned;
     this._documentsEmitted = documentsUpdated;
+    this._sourceType = options?.sourceType ?? null;
+    this._userFilterMode = options?.userFilterMode ?? UserFilterMode.ALL;
+    // Store as lowercased set so shouldIndexUser is case-insensitive
+    // (mirrors Python's should_index_user; deliberately differs from
+    // Rust's case-sensitive Source::should_index_user).
+    this._userWhitelist = new Set(
+      (options?.userWhitelist ?? []).map((e) => e.toLowerCase())
+    );
+    this._userBlacklist = new Set(
+      (options?.userBlacklist ?? []).map((e) => e.toLowerCase())
+    );
   }
 
   get syncRunId(): string {
@@ -82,6 +104,10 @@ export class SyncContext {
 
   get documentsScanned(): number {
     return this._documentsScanned;
+  }
+
+  get sourceType(): string | null {
+    return this._sourceType;
   }
 
   private async bufferEvent(event: ConnectorEventPayload): Promise<void> {
@@ -185,6 +211,32 @@ export class SyncContext {
   async incrementScanned(): Promise<void> {
     this._documentsScanned++;
     await this.client.incrementScanned(this._syncRunId);
+  }
+
+  /**
+   * Check whether a user should be indexed under this source's user-filter
+   * settings. Mirrors the Python SDK's should_index_user.
+   *
+   * Connectors call this themselves before emitting per-user records — the
+   * SDK does NOT auto-skip on emit, since the connector knows whether a
+   * given doc is "owned by a user" or workspace-shared.
+   *
+   * Empty email: ALL admits, WHITELIST/BLACKLIST reject (matches Python).
+   * Comparison is case-insensitive (Rust's equivalent is case-sensitive —
+   * deliberate divergence; lowercasing here is the friendlier default and
+   * matches operator expectations).
+   */
+  shouldIndexUser(userEmail: string): boolean {
+    if (this._userFilterMode === UserFilterMode.ALL) return true;
+    const email = userEmail.toLowerCase();
+    if (!email) return false;
+    if (this._userFilterMode === UserFilterMode.WHITELIST) {
+      return this._userWhitelist.has(email);
+    }
+    if (this._userFilterMode === UserFilterMode.BLACKLIST) {
+      return !this._userBlacklist.has(email);
+    }
+    return true;
   }
 
   /**
