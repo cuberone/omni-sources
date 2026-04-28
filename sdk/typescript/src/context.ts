@@ -269,12 +269,14 @@ export class SyncContext {
 
   async complete(newState?: Record<string, unknown>): Promise<void> {
     await this.flush();
-    await this.client.complete(
-      this._syncRunId,
-      this._documentsScanned,
-      this._documentsEmitted,
-      newState
-    );
+    // sdk_complete is body-less since 7c21fd10 — newState in the /complete
+    // body is silently dropped server-side. Persist via the connector-state
+    // endpoint instead (same path saveState() takes).
+    if (newState !== undefined) {
+      this._state = newState;
+      await this.client.updateConnectorState(this._sourceId, newState);
+    }
+    await this.client.complete(this._syncRunId);
   }
 
   async fail(error: string): Promise<void> {

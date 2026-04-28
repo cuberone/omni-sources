@@ -211,21 +211,8 @@ export class SdkClient {
     }
   }
 
-  async complete(
-    syncRunId: string,
-    documentsScanned: number,
-    documentsUpdated: number,
-    newState?: Record<string, unknown>
-  ): Promise<void> {
-    const payload: Record<string, unknown> = {
-      documents_scanned: documentsScanned,
-      documents_updated: documentsUpdated,
-    };
-    if (newState !== undefined) {
-      payload.new_state = newState;
-    }
-
-    const response = await this.post(`/sdk/sync/${syncRunId}/complete`, payload);
+  async complete(syncRunId: string): Promise<void> {
+    const response = await this.post(`/sdk/sync/${syncRunId}/complete`);
     if (!response.ok) {
       const text = await response.text();
       throw new SdkClientError(

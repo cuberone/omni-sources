@@ -160,45 +160,27 @@ describe('SdkClient', () => {
     });
   });
 
-  describe('complete', () => {
-    it('sends correct payload with state', async () => {
+  describe('complete (status-flip-only post-7c21fd10)', () => {
+    it('POSTs an empty body to /sdk/sync/:id/complete', async () => {
       let capturedBody: unknown;
+      let capturedMethod: string | null = null;
 
       server.use(
-        http.post(`${BASE_URL}/sdk/sync/:id/complete`, async ({ request }) => {
-          capturedBody = await request.json();
-          return HttpResponse.json({ success: true });
+        http.post(`${BASE_URL}/sdk/sync/sync-1/complete`, async ({ request }) => {
+          capturedMethod = request.method;
+          const text = await request.text();
+          capturedBody = text === '' ? null : JSON.parse(text);
+          return HttpResponse.json({ status: 'ok' });
         })
       );
 
       const client = new SdkClient(BASE_URL);
-      await client.complete('sync-123', 100, 50, { cursor: 'abc123' });
+      await client.complete('sync-1');
 
-      expect(capturedBody).toEqual({
-        documents_scanned: 100,
-        documents_updated: 50,
-        new_state: { cursor: 'abc123' },
-      });
-    });
-
-    it('sends payload without state when not provided', async () => {
-      let capturedBody: unknown;
-
-      server.use(
-        http.post(`${BASE_URL}/sdk/sync/:id/complete`, async ({ request }) => {
-          capturedBody = await request.json();
-          return HttpResponse.json({ success: true });
-        })
-      );
-
-      const client = new SdkClient(BASE_URL);
-      await client.complete('sync-123', 100, 50);
-
-      expect(capturedBody).toEqual({
-        documents_scanned: 100,
-        documents_updated: 50,
-      });
-      expect((capturedBody as Record<string, unknown>).new_state).toBeUndefined();
+      expect(capturedMethod).toBe('POST');
+      // Body is either absent or an empty object — server ignores it either way.
+      // Plan picks "no body sent" to match Rust SDK's complete signature.
+      expect(capturedBody).toBeNull();
     });
   });
 

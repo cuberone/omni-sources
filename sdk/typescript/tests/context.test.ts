@@ -258,6 +258,75 @@ describe('SyncContext.incrementUpdated', () => {
   });
 });
 
+describe('SyncContext.complete', () => {
+  it('persists newState via updateConnectorState before the status flip', async () => {
+    let stateUpdate: { sourceId: string; body: unknown } | null = null;
+    let completeCalled = false;
+    let completeAfterStateUpdate = false;
+
+    server.use(
+      http.post(`${BASE_URL}/sdk/events/batch`, () =>
+        HttpResponse.json({ success: true })
+      ),
+      http.put(
+        `${BASE_URL}/sdk/source/:sourceId/connector-state`,
+        async ({ request, params }) => {
+          stateUpdate = {
+            sourceId: params.sourceId as string,
+            body: await request.json(),
+          };
+          return HttpResponse.json({ success: true });
+        }
+      ),
+      http.post(`${BASE_URL}/sdk/sync/:syncRunId/complete`, () => {
+        completeCalled = true;
+        completeAfterStateUpdate = stateUpdate !== null;
+        return HttpResponse.json({ status: 'ok' });
+      })
+    );
+
+    const ctx = new SyncContext(
+      new SdkClient(BASE_URL),
+      'sync-c',
+      'source-c'
+    );
+    await ctx.complete({ last_sync_at: '2026-04-28T00:00:00Z' });
+
+    expect(stateUpdate).toEqual({
+      sourceId: 'source-c',
+      body: { last_sync_at: '2026-04-28T00:00:00Z' },
+    });
+    expect(completeCalled).toBe(true);
+    expect(completeAfterStateUpdate).toBe(true);
+  });
+
+  it('skips the state update when no newState is provided', async () => {
+    let stateUpdated = false;
+
+    server.use(
+      http.post(`${BASE_URL}/sdk/events/batch`, () =>
+        HttpResponse.json({ success: true })
+      ),
+      http.put(`${BASE_URL}/sdk/source/:sourceId/connector-state`, () => {
+        stateUpdated = true;
+        return HttpResponse.json({ success: true });
+      }),
+      http.post(`${BASE_URL}/sdk/sync/:syncRunId/complete`, () =>
+        HttpResponse.json({ status: 'ok' })
+      )
+    );
+
+    const ctx = new SyncContext(
+      new SdkClient(BASE_URL),
+      'sync-d',
+      'source-d'
+    );
+    await ctx.complete();
+
+    expect(stateUpdated).toBe(false);
+  });
+});
+
 describe('SyncContext.sourceType', () => {
   it('exposes source_type passed via the optional bag', () => {
     const ctx = new SyncContext(
