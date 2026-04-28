@@ -184,7 +184,9 @@ export class SdkClient {
   }
 
   async incrementScanned(syncRunId: string): Promise<void> {
-    const response = await this.post(`/sdk/sync/${syncRunId}/scanned`);
+    const response = await this.post(`/sdk/sync/${syncRunId}/scanned`, {
+      count: 1,
+    });
     if (!response.ok) {
       const text = await response.text();
       throw new SdkClientError(

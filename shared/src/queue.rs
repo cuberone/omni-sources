@@ -141,7 +141,7 @@ impl EventQueue {
                 AND s.sync_type = $2
                 ORDER BY q.id
                 LIMIT $1
-                FOR UPDATE SKIP LOCKED
+                FOR UPDATE OF q SKIP LOCKED
             )
             UPDATE connector_events_queue q
             SET status = 'processing',
@@ -184,7 +184,7 @@ impl EventQueue {
                 AND s.id IS NULL
                 ORDER BY q.id
                 LIMIT $1
-                FOR UPDATE SKIP LOCKED
+                FOR UPDATE OF q SKIP LOCKED
             )
             UPDATE connector_events_queue q
             SET status = 'processing',
