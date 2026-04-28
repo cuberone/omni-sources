@@ -19,7 +19,7 @@ from config import (
 )
 from logger import setup_logging
 from memory.bootstrap import MemoryConfigError, build_mem0_config
-from memory.role_bootstrap import ensure_mem0ai_role
+from memory.role_bootstrap import sync_mem0ai_password
 from memory.service import MemoryService
 from routers import (
     agents_router,
@@ -80,10 +80,8 @@ async def startup_event():
 
         if MEMORY_ENABLED:
             try:
-                ensure_mem0ai_role(
+                sync_mem0ai_password(
                     dsn=DATABASE_URL,
-                    database_name=os.environ["DATABASE_NAME"],
-                    database_username=os.environ["DATABASE_USERNAME"],
                     mem0ai_password=MEM0AI_DATABASE_ROLE_PASSWORD,
                     role_name=MEM0AI_DATABASE_USER,
                 )
