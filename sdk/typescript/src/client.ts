@@ -200,6 +200,17 @@ export class SdkClient {
     }
   }
 
+  async incrementUpdated(syncRunId: string, count: number): Promise<void> {
+    const response = await this.post(`/sdk/sync/${syncRunId}/updated`, { count });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to increment updated: ${response.status} - ${text}`,
+        response.status
+      );
+    }
+  }
+
   async complete(
     syncRunId: string,
     documentsScanned: number,

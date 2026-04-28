@@ -202,6 +202,33 @@ describe('SdkClient', () => {
     });
   });
 
+  describe('incrementUpdated', () => {
+    it('POSTs {count} to /sdk/sync/:id/updated', async () => {
+      let captured: unknown;
+      server.use(
+        http.post(`${BASE_URL}/sdk/sync/sync-1/updated`, async ({ request }) => {
+          captured = await request.json();
+          return HttpResponse.json({ status: 'ok' });
+        })
+      );
+      const client = new SdkClient(BASE_URL);
+      await client.incrementUpdated('sync-1', 7);
+      expect(captured).toEqual({ count: 7 });
+    });
+
+    it('throws SdkClientError on non-OK response', async () => {
+      server.use(
+        http.post(`${BASE_URL}/sdk/sync/sync-1/updated`, () =>
+          HttpResponse.text('boom', { status: 500 })
+        )
+      );
+      const client = new SdkClient(BASE_URL);
+      await expect(client.incrementUpdated('sync-1', 1)).rejects.toThrow(
+        /Failed to increment updated/
+      );
+    });
+  });
+
   describe('fail', () => {
     it('sends correct error payload', async () => {
       let capturedBody: unknown;

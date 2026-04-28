@@ -214,6 +214,20 @@ export class SyncContext {
   }
 
   /**
+   * Bump the server-side documents_updated counter for this sync run.
+   *
+   * Mirrors Rust SDK's increment_updated. The connector author chooses
+   * what counts as "updated" — typically called once per successfully
+   * persisted emit/emitUpdated, or batched (e.g. once per processed
+   * chunk). Errors propagate so the caller can decide whether a stat
+   * miss should fail the sync or be swallowed.
+   */
+  async incrementUpdated(count: number): Promise<void> {
+    if (count <= 0) return;
+    await this.client.incrementUpdated(this._syncRunId, count);
+  }
+
+  /**
    * Check whether a user should be indexed under this source's user-filter
    * settings. Mirrors the Python SDK's should_index_user.
    *

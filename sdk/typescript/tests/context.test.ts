@@ -209,6 +209,55 @@ describe('SyncContext.shouldIndexUser', () => {
   });
 });
 
+describe('SyncContext.incrementUpdated', () => {
+  it('POSTs the count to /sdk/sync/:id/updated', async () => {
+    const calls: Array<{ syncRunId: string; count: number }> = [];
+    server.use(
+      http.post(
+        `${BASE_URL}/sdk/sync/:syncRunId/updated`,
+        async ({ request, params }) => {
+          const body = (await request.json()) as { count: number };
+          calls.push({
+            syncRunId: params.syncRunId as string,
+            count: body.count,
+          });
+          return HttpResponse.json({ status: 'ok' });
+        }
+      )
+    );
+
+    const ctx = new SyncContext(
+      new SdkClient(BASE_URL),
+      'sync-9',
+      'source-9'
+    );
+
+    await ctx.incrementUpdated(3);
+    await ctx.incrementUpdated(5);
+
+    expect(calls).toEqual([
+      { syncRunId: 'sync-9', count: 3 },
+      { syncRunId: 'sync-9', count: 5 },
+    ]);
+  });
+
+  it('propagates HTTP errors to the caller', async () => {
+    server.use(
+      http.post(`${BASE_URL}/sdk/sync/:syncRunId/updated`, () =>
+        HttpResponse.text('boom', { status: 500 })
+      )
+    );
+    const ctx = new SyncContext(
+      new SdkClient(BASE_URL),
+      'sync-10',
+      'source-10'
+    );
+    await expect(ctx.incrementUpdated(1)).rejects.toThrow(
+      /Failed to increment updated/
+    );
+  });
+});
+
 describe('SyncContext.sourceType', () => {
   it('exposes source_type passed via the optional bag', () => {
     const ctx = new SyncContext(
