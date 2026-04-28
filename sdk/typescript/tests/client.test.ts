@@ -239,7 +239,7 @@ describe('SdkClient', () => {
       const client = new SdkClient(BASE_URL);
       const result = await client.fetchSourceConfig('source-123');
 
-      expect(result).toEqual(mockData);
+      expect(result).toMatchObject(mockData);
     });
 
     it('throws SdkClientError on 404', async () => {
@@ -256,6 +256,69 @@ describe('SdkClient', () => {
       await expect(
         client.fetchSourceConfig('nonexistent')
       ).rejects.toThrow('Failed to fetch source config: 404');
+    });
+
+    it('defaults missing user-filter fields to ALL/null', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-min/sync-config`, () =>
+          HttpResponse.json({
+            config: {},
+            credentials: {},
+            connector_state: null,
+          })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      const cfg = await client.fetchSourceConfig('source-min');
+
+      expect(cfg.user_filter_mode).toBe('all');
+      expect(cfg.user_whitelist).toBeNull();
+      expect(cfg.user_blacklist).toBeNull();
+      expect(cfg.source_type).toBeNull();
+    });
+
+    it('rejects an unknown user_filter_mode at parse time', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-bad/sync-config`, () =>
+          HttpResponse.json({
+            config: {},
+            credentials: {},
+            connector_state: null,
+            user_filter_mode: 'invalid_mode',
+          })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(client.fetchSourceConfig('source-bad')).rejects.toThrow();
+    });
+
+    it('parses a fully populated sync-config', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-full/sync-config`, () =>
+          HttpResponse.json({
+            config: { workspaces: ['ws1'] },
+            credentials: { token: 'redacted' },
+            connector_state: { cursor: 'abc' },
+            source_type: 'linear',
+            user_filter_mode: 'whitelist',
+            user_whitelist: ['alice@example.com', 'bob@example.com'],
+            user_blacklist: null,
+          })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      const cfg = await client.fetchSourceConfig('source-full');
+
+      expect(cfg.config).toEqual({ workspaces: ['ws1'] });
+      expect(cfg.credentials).toEqual({ token: 'redacted' });
+      expect(cfg.connector_state).toEqual({ cursor: 'abc' });
+      expect(cfg.source_type).toBe('linear');
+      expect(cfg.user_filter_mode).toBe('whitelist');
+      expect(cfg.user_whitelist).toEqual(['alice@example.com', 'bob@example.com']);
+      expect(cfg.user_blacklist).toBeNull();
     });
   });
 

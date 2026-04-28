@@ -1,6 +1,10 @@
 import { SdkClientError, ConfigurationError } from './errors.js';
-import type { ConnectorEventPayload } from './models.js';
-import { serializeConnectorEvent } from './models.js';
+import {
+  SdkSourceSyncDataSchema,
+  serializeConnectorEvent,
+  type ConnectorEventPayload,
+  type SdkSourceSyncData,
+} from './models.js';
 
 export class SdkClient {
   private readonly baseUrl: string;
@@ -242,11 +246,7 @@ export class SdkClient {
     }
   }
 
-  async fetchSourceConfig(sourceId: string): Promise<{
-    config: Record<string, unknown>;
-    credentials: Record<string, unknown>;
-    connector_state: Record<string, unknown> | null;
-  }> {
+  async fetchSourceConfig(sourceId: string): Promise<SdkSourceSyncData> {
     const response = await this.get(`/sdk/source/${sourceId}/sync-config`);
     if (!response.ok) {
       const text = await response.text();
@@ -255,11 +255,8 @@ export class SdkClient {
         response.status
       );
     }
-    return response.json() as Promise<{
-      config: Record<string, unknown>;
-      credentials: Record<string, unknown>;
-      connector_state: Record<string, unknown> | null;
-    }>;
+    const raw = (await response.json()) as unknown;
+    return SdkSourceSyncDataSchema.parse(raw);
   }
 
   private async get(path: string): Promise<Response> {
