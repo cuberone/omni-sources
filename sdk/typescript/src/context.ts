@@ -106,6 +106,17 @@ export class SyncContext {
     return this._documentsScanned;
   }
 
+  /**
+   * The sync mode the manager dispatched this run with — full, incremental,
+   * or realtime. Connectors should branch reset/resume behavior on this,
+   * not on `state` presence: a manual "Full" trigger from the UI carries
+   * existing state but should still reset cursors and run delete
+   * reconciliation.
+   */
+  get syncMode(): SyncMode {
+    return this._syncMode;
+  }
+  
   get sourceType(): string | null {
     return this._sourceType;
   }
